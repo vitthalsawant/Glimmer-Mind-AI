@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Sparkles, ArrowLeft, ThumbsUp, ThumbsDown, Copy, Check } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { Components } from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -15,16 +15,34 @@ interface Message {
   timestamp: number;
   likes?: number;
   dislikes?: number;
-  userAction?: 'like' | 'dislike' | null; // Track user's action
+  userAction?: 'like' | 'dislike' | null;
+  context?: string;
 }
 
 interface ChatContext {
   messages: Message[];
   history: string;
+  lastQuery: string; // Add lastQuery to track the previous question
+  lastResponse: string; // Add lastResponse to track the previous answer
 }
 
 interface ChatSession {
   conversationId: string;
+}
+
+interface MessageActionsProps {
+  message: Message;
+  onLike: () => void;
+  onDislike: () => void;
+  onCopy: () => void;
+}
+
+interface MarkdownComponentProps {
+  children?: React.ReactNode;
+  className?: string;
+  node?: any;
+  inline?: boolean;
+  [key: string]: any;
 }
 
 const formatResponse = (text: string) => {
@@ -39,7 +57,7 @@ const formatResponse = (text: string) => {
     .trim();
 };
 
-const MessageActions = ({ message, onLike, onDislike, onCopy }) => {
+const MessageActions: React.FC<MessageActionsProps> = ({ message, onLike, onDislike, onCopy }) => {
   const [copied, setCopied] = useState(false);
   
   const handleCopy = async () => {
@@ -91,37 +109,266 @@ const MessageActions = ({ message, onLike, onDislike, onCopy }) => {
   );
 };
 
-// Add this function near the top of your Chat component
 const processUserContext = (messages: Message[], currentQuery: string): string => {
-  // Get last 3 messages for immediate context
-  const recentMessages = messages.slice(-3);
+  // Get last 5 messages for better context
+  const recentMessages = messages.slice(-5);
   
   // Extract key topics and intentions
   const context = recentMessages.map(msg => ({
     role: msg.role,
     content: msg.content,
-    // Basic topic extraction
-    topics: msg.content
-      .toLowerCase()
-      .split(/[.,!?]/)
-      .map(s => s.trim())
-      .filter(s => s.length > 3),
+    topics: extractKeyTopics(msg.content),
+    questions: extractQuestions(msg.content),
+    technicalTerms: extractTechnicalTerms(msg.content),
+    emotions: detectEmotions(msg.content),
+    examples: extractExamples(msg.content) // New: Extract examples from previous responses
   }));
 
-  // Build context string
-  const contextSummary = context.length > 0
-    ? `Recent discussion topics: ${context
-        .flatMap(c => c.topics)
-        .slice(-5)
-        .join(', ')}.`
-    : '';
+  // Build a more structured context string
+  let contextSummary = '';
+  
+  if (context.length > 0) {
+    // Add recent topics
+    const topics = context
+      .flatMap(c => c.topics)
+      .filter((topic, index, self) => self.indexOf(topic) === index)
+      .slice(-5);
+    
+    if (topics.length > 0) {
+      contextSummary += `Recent topics: ${topics.join(', ')}. `;
+    }
+    
+    // Add any recent questions
+    const questions = context
+      .flatMap(c => c.questions)
+      .slice(-2);
+    
+    if (questions.length > 0) {
+      contextSummary += `Recent questions: ${questions.join('; ')}. `;
+    }
+    
+    // Add any technical context
+    const technicalTerms = context
+      .flatMap(c => c.technicalTerms)
+      .filter((term, index, self) => self.indexOf(term) === index)
+      .slice(-3);
+    
+    if (technicalTerms.length > 0) {
+      contextSummary += `Technical context: ${technicalTerms.join(', ')}. `;
+    }
+    
+    // Add emotional context
+    const emotions = context
+      .flatMap(c => c.emotions)
+      .filter((emotion, index, self) => self.indexOf(emotion) === index)
+      .slice(-3);
+    
+    if (emotions.length > 0) {
+      contextSummary += `Emotional context: ${emotions.join(', ')}. `;
+    }
+
+    // Add previous examples for context
+    const previousExamples = context
+      .flatMap(c => c.examples)
+      .slice(-3);
+    
+    if (previousExamples.length > 0) {
+      contextSummary += `Previous examples: ${previousExamples.join('; ')}. `;
+    }
+  }
 
   return contextSummary;
 };
 
+// Helper functions for context extraction
+const extractKeyTopics = (text: string): string[] => {
+  // Common topic indicators
+  const topicIndicators = [
+    'about', 'regarding', 'concerning', 'related to', 'topic of', 
+    'discussing', 'talking about', 'focus on', 'interested in'
+  ];
+  
+  // Extract topics based on indicators
+  const topics: string[] = [];
+  
+  // Look for topic indicators
+  topicIndicators.forEach(indicator => {
+    const regex = new RegExp(`${indicator}\\s+([\\w\\s]+)`, 'i');
+    const match = text.match(regex);
+    if (match && match[1]) {
+      topics.push(match[1].trim());
+    }
+  });
+  
+  // Extract nouns as potential topics (simplified approach)
+  const words = text.toLowerCase().split(/\s+/);
+  const commonNouns = words.filter(word => 
+    word.length > 3 && 
+    !['the', 'and', 'that', 'this', 'with', 'for', 'you', 'your', 'have', 'has', 'had'].includes(word)
+  );
+  
+  // Add top 3 most frequent nouns
+  const nounCounts: Record<string, number> = {};
+  commonNouns.forEach(noun => {
+    nounCounts[noun] = (nounCounts[noun] || 0) + 1;
+  });
+  
+  const topNouns = Object.entries(nounCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(entry => entry[0]);
+  
+  return [...new Set([...topics, ...topNouns])];
+};
+
+const extractQuestions = (text: string): string[] => {
+  // Extract sentences that end with question marks
+  const questionRegex = /[^.!?]+\?/g;
+  const matches = text.match(questionRegex);
+  return matches ? matches.map(q => q.trim()) : [];
+};
+
+const extractTechnicalTerms = (text: string): string[] => {
+  // Common technical terms and programming languages
+  const technicalTerms = [
+    'javascript', 'typescript', 'react', 'vue', 'angular', 'node', 'python', 'java', 'c++', 'c#', 
+    'php', 'ruby', 'go', 'rust', 'swift', 'kotlin', 'html', 'css', 'sql', 'nosql', 'mongodb', 
+    'postgresql', 'mysql', 'api', 'rest', 'graphql', 'docker', 'kubernetes', 'aws', 'azure', 
+    'gcp', 'ci/cd', 'git', 'github', 'gitlab', 'bitbucket', 'npm', 'yarn', 'webpack', 'babel', 
+    'jest', 'testing', 'unit test', 'integration test', 'frontend', 'backend', 'fullstack', 
+    'database', 'server', 'client', 'browser', 'dom', 'state management', 'redux', 'mobx', 
+    'hooks', 'component', 'function', 'class', 'object', 'array', 'promise', 'async', 'await'
+  ];
+  
+  const foundTerms: string[] = [];
+  
+  technicalTerms.forEach(term => {
+    if (text.toLowerCase().includes(term)) {
+      foundTerms.push(term);
+    }
+  });
+  
+  return foundTerms;
+};
+
+// Add emotion detection function
+const detectEmotions = (text: string): string[] => {
+  const emotions: string[] = [];
+  
+  // Check for emotional keywords
+  const emotionalKeywords = {
+    happy: ['happy', 'joy', 'excited', 'thrilled', 'delighted', 'pleased', 'grateful', 'blessed', 'wonderful', 'amazing', 'great'],
+    sad: ['sad', 'unhappy', 'depressed', 'down', 'disappointed', 'upset', 'hurt', 'heartbroken', 'lonely', 'missing'],
+    angry: ['angry', 'mad', 'frustrated', 'annoyed', 'irritated', 'furious', 'outraged', 'offended'],
+    anxious: ['anxious', 'worried', 'nervous', 'stressed', 'concerned', 'afraid', 'scared', 'fearful', 'uneasy'],
+    confused: ['confused', 'unsure', 'uncertain', 'puzzled', 'perplexed', 'doubtful', 'questioning'],
+    love: ['love', 'adore', 'care', 'affection', 'romantic', 'crush', 'feelings', 'attracted', 'interested'],
+    gratitude: ['thankful', 'appreciate', 'grateful', 'blessed', 'fortunate', 'lucky'],
+    pride: ['proud', 'accomplished', 'achieved', 'success', 'confident', 'capable'],
+    regret: ['regret', 'sorry', 'apologize', 'mistake', 'wrong', 'should have', 'could have'],
+    hope: ['hope', 'wish', 'dream', 'future', 'looking forward', 'anticipate', 'expect']
+  };
+  
+  // Check for emotional intensity indicators
+  const intensityIndicators = {
+    high: ['very', 'extremely', 'incredibly', 'absolutely', 'totally', 'completely', 'so much', 'so many'],
+    low: ['slightly', 'a little', 'somewhat', 'kind of', 'sort of', 'maybe', 'possibly']
+  };
+  
+  // Check for emotional context
+  const emotionalContext = {
+    personal: ['I feel', 'I am', 'I\'m', 'my', 'me', 'mine'],
+    relationship: ['friend', 'family', 'partner', 'boyfriend', 'girlfriend', 'spouse', 'parent', 'child', 'sibling'],
+    lifeEvents: ['graduation', 'wedding', 'birthday', 'anniversary', 'breakup', 'divorce', 'loss', 'death', 'illness', 'recovery']
+  };
+  
+  // Detect emotions based on keywords
+  for (const [emotion, keywords] of Object.entries(emotionalKeywords)) {
+    for (const keyword of keywords) {
+      if (text.toLowerCase().includes(keyword)) {
+        emotions.push(emotion);
+        break;
+      }
+    }
+  }
+  
+  // Check for emotional intensity
+  let intensity = 'moderate';
+  for (const [level, indicators] of Object.entries(intensityIndicators)) {
+    for (const indicator of indicators) {
+      if (text.toLowerCase().includes(indicator)) {
+        intensity = level;
+        break;
+      }
+    }
+  }
+  
+  // Add emotional context
+  let context = '';
+  for (const [type, indicators] of Object.entries(emotionalContext)) {
+    for (const indicator of indicators) {
+      if (text.toLowerCase().includes(indicator)) {
+        context = type;
+        break;
+      }
+    }
+  }
+  
+  // Add intensity and context to emotions if detected
+  if (emotions.length > 0) {
+    if (intensity !== 'moderate') {
+      emotions.push(`${intensity} intensity`);
+    }
+    if (context) {
+      emotions.push(`${context} context`);
+    }
+  }
+  
+  return emotions;
+};
+
+// New function to extract examples from text
+const extractExamples = (text: string): string[] => {
+  const examples: string[] = [];
+  
+  // Look for common example indicators
+  const exampleIndicators = [
+    'for example',
+    'such as',
+    'like',
+    'instance',
+    'example',
+    'illustration',
+    'case in point'
+  ];
+  
+  // Extract examples based on indicators
+  exampleIndicators.forEach(indicator => {
+    const regex = new RegExp(`${indicator}[^.!?]+[.!?]`, 'gi');
+    const matches = text.match(regex);
+    if (matches) {
+      examples.push(...matches.map(match => match.trim()));
+    }
+  });
+  
+  // Look for code blocks as examples
+  const codeBlockRegex = /```[\s\S]*?```/g;
+  const codeBlocks = text.match(codeBlockRegex);
+  if (codeBlocks) {
+    examples.push(...codeBlocks.map(block => block.trim()));
+  }
+  
+  return examples;
+};
+
 export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [context, setContext] = useState<ChatContext>({ messages: [], history: '' });
+  const [context, setContext] = useState<ChatContext>({ 
+    messages: [], 
+    history: '',
+    lastQuery: '',
+    lastResponse: ''
+  });
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -130,22 +377,55 @@ export default function Chat() {
   const [session, setSession] = useState<ChatSession>(() => ({
     conversationId: uuidv4()
   }));
+  
+  // Add response cache
+  const responseCache = useRef<Record<string, { response: string, timestamp: number }>>({});
+  const CACHE_EXPIRY = 1000 * 60 * 60; // 1 hour in milliseconds
 
-  // Initialize the model
+  // Initialize the model with optimized settings
   const genAI = new GoogleGenerativeAI(API_KEY);
   const model = genAI.getGenerativeModel({
     model: "gemini-2.0-flash",
     generationConfig: {
-      temperature: 0.7,
-      topP: 0.95,
-      topK: 40,
-      maxOutputTokens: 8192,
-    }
+      temperature: 0.5,
+      topP: 0.8,
+      topK: 20,
+      maxOutputTokens: 4096,
+      stopSequences: ["Human:", "Assistant:", "User:"],
+    },
+    safetySettings: [
+      {
+        category: "HARM_CATEGORY_HARASSMENT" as any,
+        threshold: "BLOCK_MEDIUM_AND_ABOVE" as any
+      },
+      {
+        category: "HARM_CATEGORY_HATE_SPEECH" as any,
+        threshold: "BLOCK_MEDIUM_AND_ABOVE" as any
+      },
+      {
+        category: "HARM_CATEGORY_SEXUALLY_EXPLICIT" as any,
+        threshold: "BLOCK_MEDIUM_AND_ABOVE" as any
+      },
+      {
+        category: "HARM_CATEGORY_DANGEROUS_CONTENT" as any,
+        threshold: "BLOCK_MEDIUM_AND_ABOVE" as any
+      }
+    ]
   });
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
+
+  // Add function to update context
+  const updateContext = (newQuery: string, newResponse: string) => {
+    setContext(prev => ({
+      ...prev,
+      lastQuery: newQuery,
+      lastResponse: newResponse,
+      history: `${prev.history}\nPrevious Question: ${newQuery}\nPrevious Answer: ${newResponse}\n`
+    }));
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -159,11 +439,12 @@ export default function Chat() {
       adjustTextareaHeight(textareaRef.current, true);
     }
 
-    // Create user message
+    // Create user message with context
     const userMessageObj = { 
       role: 'user' as const, 
       content: userMessage, 
       timestamp,
+      context: context.history // Include conversation history
     };
 
     // Add user message to state
@@ -175,6 +456,7 @@ export default function Chat() {
         role: userMessageObj.role,
         content: userMessageObj.content,
         conversation_id: session.conversationId,
+        context: userMessageObj.context // Store context in database
       }]);
     } catch (error) {
       console.error('Error storing user message:', error);
@@ -185,12 +467,41 @@ export default function Chat() {
     setTimeout(scrollToBottom, 100);
 
     try {
+      // Check cache first
+      const cacheKey = userMessage.toLowerCase().trim();
+      const cachedResponse = responseCache.current[cacheKey];
+      const now = Date.now();
+      
+      if (cachedResponse && (now - cachedResponse.timestamp) < CACHE_EXPIRY) {
+        console.log('Using cached response');
+        const aiMessageObj = { 
+          role: 'assistant' as const, 
+          content: cachedResponse.response,
+          timestamp: now,
+          context: context.history
+        };
+        
+        setMessages(prev => [...prev, aiMessageObj]);
+        updateContext(userMessage, cachedResponse.response);
+        setTimeout(scrollToBottom, 100);
+        setIsLoading(false);
+        return;
+      }
+      
+      // Add timeout for API call
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Request timed out')), 30000);
+      });
+      
       const conversationContext = processUserContext(messages, userMessage);
       const promptWithContext = `
-You are GlimmerMind AI, an advanced AI assistant with strong NLP capabilities. 
+You are GlimmerMind AI, an advanced AI assistant with strong NLP capabilities and emotional intelligence. 
 
-Context Analysis:
-${context.history ? `Previous Conversation Context: ${context.history}` : 'Starting new conversation'}
+Previous Conversation Context:
+${context.history}
+Last Question: "${context.lastQuery}"
+Last Answer: "${context.lastResponse}"
+
 Current Query: "${userMessage}"
 
 Response Guidelines:
@@ -198,19 +509,28 @@ Response Guidelines:
    - Consider previous messages for continuity
    - Maintain consistent context throughout the conversation
    - Reference relevant previous points when appropriate
+   - Acknowledge and validate user's emotions when present
+   - Build upon previous examples when relevant
+   - Always reference previous context when answering follow-up questions
 
 2. Query Analysis:
-   - Intent: Identify the primary purpose (question, request, clarification)
+   - Intent: Identify the primary purpose (question, request, clarification, emotional support)
    - Topic: Determine main subject matter
    - Complexity: Adjust explanation depth accordingly
    - Sentiment: Match user's tone appropriately
+   - Emotional State: Recognize and respond to user's emotional state with empathy
+   - Follow-up Detection: Identify if this is a follow-up question and reference previous context
 
 3. Response Structure:
    - Start with direct answer to main query
+   - Reference previous context when relevant
    - Provide supporting details or examples
    - Use bullet points or numbered lists for multiple points
    - Include relevant code snippets if technical
    - Conclude with key takeaway or action item
+   - For emotional topics, offer validation and support
+   - Always provide at least 2-3 relevant examples
+   - For follow-up questions, explicitly reference previous context
 
 4. Quality Parameters:
    - Accuracy: Ensure factual correctness
@@ -218,6 +538,16 @@ Response Guidelines:
    - Relevance: Stay focused on user's intent
    - Completeness: Address all aspects of query
    - Actionability: Provide practical steps when applicable
+   - Empathy: Show understanding and compassion for personal or emotional topics
+   - Examples: Provide diverse and relevant examples
+   - Context: Maintain conversation continuity
+
+5. Emotional Intelligence:
+   - Validate feelings: Acknowledge and normalize user's emotions
+   - Show empathy: Demonstrate understanding of emotional experiences
+   - Offer support: Provide encouragement and practical advice when appropriate
+   - Be sensitive: Avoid dismissive or minimizing language
+   - Maintain boundaries: Be supportive while staying within appropriate AI assistant role
 
 Format your response with:
 - Clear headings when needed
@@ -225,6 +555,10 @@ Format your response with:
 - Code blocks for technical content
 - Tables for comparative data
 - Emphasis on key points
+- Warm, supportive tone for emotional topics
+- Multiple examples in each response
+- References to previous context when relevant
+- Explicit connections to previous questions and answers
 
 Question: ${userMessage}
 
@@ -234,37 +568,71 @@ Remember to:
 - Use examples for complex concepts
 - Highlight critical information
 - Suggest related topics if relevant
+- Respond with appropriate emotional sensitivity
+- Always provide multiple examples
+- Reference previous context for follow-ups
+- Explicitly connect to previous questions and answers
 `;
 
-      const result = await model.generateContent(promptWithContext);
-      const response = await result.response;
-      const aiResponse = response.text();
+      // Race between the API call and the timeout
+      const result = await Promise.race([
+        model.generateContent(promptWithContext),
+        timeoutPromise
+      ]) as { response: { text: () => string } };
+      
+      const aiResponse = result.response.text();
       const formattedResponse = formatResponse(aiResponse);
       
-      // Create AI message object
+      // Cache the response
+      responseCache.current[cacheKey] = {
+        response: formattedResponse,
+        timestamp: now
+      };
+      
+      // Create AI message object with context
       const aiMessageObj = { 
         role: 'assistant' as const, 
         content: formattedResponse,
-        timestamp: Date.now()
+        timestamp: now,
+        context: context.history
       };
 
       // Add AI message to state
       setMessages(prev => [...prev, aiMessageObj]);
+
+      // Update context with new Q&A
+      updateContext(userMessage, formattedResponse);
 
       // Store AI message in Supabase
       await supabase.from('chat_messages').insert([{
         role: aiMessageObj.role,
         content: aiMessageObj.content,
         conversation_id: session.conversationId,
+        context: aiMessageObj.context
       }]);
 
       setTimeout(scrollToBottom, 100);
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Detailed error:', error);
+      
+      // Provide more specific error messages based on the error type
+      let errorMessage = 'I apologize, but I encountered an error. Please try again.';
+      
+      if (error instanceof Error) {
+        if (error.message === 'Request timed out') {
+          errorMessage = 'The request took too long to process. Please try again with a simpler query.';
+        } else if (error.message.includes('API key')) {
+          errorMessage = 'There is an issue with the API configuration. Please contact support.';
+        } else if (error.message.includes('network')) {
+          errorMessage = 'There seems to be a network issue. Please check your connection and try again.';
+        }
+      }
+      
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        content: 'I apologize, but I encountered an error. Please try again.',
-        timestamp: Date.now()
+        content: errorMessage,
+        timestamp: Date.now(),
+        context: context.history
       }]);
       setTimeout(scrollToBottom, 100);
     }
@@ -320,7 +688,7 @@ Remember to:
     }));
   };
 
-  const calculateUpdatedLikes = (msg: Message) => {
+  const calculateUpdatedLikes = (msg: Message): Message => {
     if (msg.userAction === 'like') {
       return {
         ...msg,
@@ -343,7 +711,7 @@ Remember to:
     };
   };
 
-  const calculateUpdatedDislikes = (msg: Message) => {
+  const calculateUpdatedDislikes = (msg: Message): Message => {
     if (msg.userAction === 'dislike') {
       return {
         ...msg,
@@ -374,8 +742,13 @@ Remember to:
         .eq('conversation_id', session.conversationId);
       
       setMessages([]);
-      setContext({ messages: [], history: '' });
-      setSession({ conversationId: uuidv4() }); // Start new conversation
+      setContext({ 
+        messages: [], 
+        history: '',
+        lastQuery: '',
+        lastResponse: ''
+      });
+      setSession({ conversationId: uuidv4() });
     } catch (error) {
       console.error('Error clearing conversation:', error);
     }
@@ -390,8 +763,8 @@ Remember to:
     textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
   };
 
-  const markdownComponents = {
-    code({node, inline, className, children, ...props}) {
+  const markdownComponents: Components = {
+    code: ({ node, inline, className, children, ...props }: MarkdownComponentProps) => {
       const match = /language-(\w+)/.exec(className || '');
       return !inline && match ? (
         <SyntaxHighlighter
@@ -408,34 +781,32 @@ Remember to:
         </code>
       );
     },
-    pre({children}) {
-      return <pre className="rounded-md overflow-auto">{children}</pre>;
-    },
-    table({children}) {
-      return (
-        <div className="overflow-x-auto">
-          <table className="table-auto border-collapse my-4">{children}</table>
-        </div>
-      );
-    },
-    th({children}) {
-      return <th className="border border-gray-300 px-4 py-2 bg-gray-100">{children}</th>;
-    },
-    td({children}) {
-      return <td className="border border-gray-300 px-4 py-2">{children}</td>;
-    },
-    ul({children}) {
-      return <ul className="list-disc pl-6 space-y-2">{children}</ul>;
-    },
-    ol({children}) {
-      return <ol className="list-decimal pl-6 space-y-2">{children}</ol>;
-    },
-    li({children}) {
-      return <li className="mb-1">{children}</li>;
-    },
-    p({children}) {
-      return <p className="mb-4">{children}</p>;
-    }
+    pre: ({ children }: MarkdownComponentProps) => (
+      <pre className="rounded-md overflow-auto">{children}</pre>
+    ),
+    table: ({ children }: MarkdownComponentProps) => (
+      <div className="overflow-x-auto">
+        <table className="table-auto border-collapse my-4">{children}</table>
+      </div>
+    ),
+    th: ({ children }: MarkdownComponentProps) => (
+      <th className="border border-gray-300 px-4 py-2 bg-gray-100">{children}</th>
+    ),
+    td: ({ children }: MarkdownComponentProps) => (
+      <td className="border border-gray-300 px-4 py-2">{children}</td>
+    ),
+    ul: ({ children }: MarkdownComponentProps) => (
+      <ul className="list-disc pl-6 space-y-2">{children}</ul>
+    ),
+    ol: ({ children }: MarkdownComponentProps) => (
+      <ol className="list-decimal pl-6 space-y-2">{children}</ol>
+    ),
+    li: ({ children }: MarkdownComponentProps) => (
+      <li className="mb-1">{children}</li>
+    ),
+    p: ({ children }: MarkdownComponentProps) => (
+      <p className="mb-4">{children}</p>
+    )
   };
 
   return (
