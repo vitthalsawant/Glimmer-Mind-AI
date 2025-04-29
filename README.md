@@ -64,7 +64,6 @@ A modern AI assistant built with React, TypeScript, and Google's Gemini API. Gli
 - 💅 Prettier
 - 🐙 Git & GitHub
 
-[Previous content remains the same...]
 
 ## Performance Metrics
 - ⚡ Lighthouse Score: 95+
