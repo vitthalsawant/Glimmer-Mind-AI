@@ -719,7 +719,7 @@ function HomePage() {
               <ul className="mt-4 space-y-2">
                 <li><a href="#" className="text-gray-400 hover:text-white transition-colors">Documentation</a></li>
                 <li><a href="#" className="text-gray-400 hover:text-white transition-colors">Guides</a></li>
-                <li><a href="#" className="text-gray-400 hover:text-white transition-colors">Blog</a></li>
+                <li><a href="#" className="text-gray-400 hover:text-white transition-colors">Blog AI</a></li>
                 <li><a href="#" className="text-gray-400 hover:text-white transition-colors">Support</a></li>
               </ul>
             </div>
