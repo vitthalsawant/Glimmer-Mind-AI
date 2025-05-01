@@ -87,5 +87,5 @@ A modern AI assistant built with React, TypeScript, and Google's Gemini API. Gli
 
 ## Support
 Need help? Contact us:
-- 📧 Email: [your-vitthalsawant300@gmail.com]
-- 💬 WhatsApp: +91 8308075485
+- 📧 Email: [vitthalsawant300@gmail.com]
+- 💬 WhatsApp: [+91 8308075485](https://wa.me/918308075485)
